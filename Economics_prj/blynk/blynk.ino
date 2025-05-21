@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <BlynkSimpleEsp32.h>
+
 BlynkTimer timer;
 
 char auth[] = BLYNK_AUTH_TOKEN;
@@ -18,14 +19,14 @@ const int motorIn2 = 27;
 const int motorEnable = 26;
 
 const int ldrPin = 34;
-const int led2Pin = 33; // LDR-controlled LED
+const int led2Pin = 33;
 
 const int smokePin = 35;
 const int smokeRGB_R = 12;
 const int smokeRGB_G = 13;
 
-const int roomLEDPin = 32;   // First room LED (V9)
-const int roomLEDPin2 = 23;  // Second room LED (V19)
+const int roomLEDPin = 32;
+const int roomLEDPin2 = 23;
 
 const int relay1 = 15;
 const int relay2 = 2;
@@ -44,14 +45,21 @@ bool ldrLedEnabled = true;
 bool relayOverride = false;
 bool relay1Manual = false, relay2Manual = false, relay3Manual = false;
 
+// For optimization
+int lastLdrPWM = -1;
+int lastSmokeValue = -1;
+int lastMotorSpeed = -1;
+
+int lastP1 = -1, lastP2 = -1, lastP3 = -1, lastSum = -1;
+
 // ===== BLYNK HANDLERS =====
 BLYNK_WRITE(V6) { motorSpeed = param.asInt(); }
 BLYNK_WRITE(V7) { motorOn = param.asInt(); }
 BLYNK_WRITE(V2) { motorDirection = param.asInt(); }
-BLYNK_WRITE(V5) { ldrLedEnabled = !param.asInt(); } // If V5 ON, disable LDR LED
+BLYNK_WRITE(V5) { ldrLedEnabled = !param.asInt(); }
 
-BLYNK_WRITE(V9) {digitalWrite(roomLEDPin, param.asInt());}
-BLYNK_WRITE(V19) {digitalWrite(roomLEDPin2, param.asInt());}
+BLYNK_WRITE(V9) { digitalWrite(roomLEDPin, param.asInt()); }
+BLYNK_WRITE(V19) { digitalWrite(roomLEDPin2, param.asInt()); }
 
 BLYNK_WRITE(V15) { relay1Manual = param.asInt(); relayOverride = true; }
 BLYNK_WRITE(V17) { relay2Manual = param.asInt(); relayOverride = true; }
@@ -76,6 +84,7 @@ void setup() {
   pinMode(smokeRGB_R, OUTPUT);
   pinMode(smokeRGB_G, OUTPUT);
   pinMode(roomLEDPin, OUTPUT);
+  pinMode(roomLEDPin2, OUTPUT);
 
   pinMode(relay1, OUTPUT);
   pinMode(relay2, OUTPUT);
@@ -103,39 +112,58 @@ void controlMotor() {
   }
 }
 
-// ===== SENSOR DATA =====
+// ===== OPTIMIZED SENSOR DATA =====
 void sendSensorData() {
+  // LDR Sensor
   int ldrValue = analogRead(ldrPin);
   int ldrPWM = map(ldrValue, 0, 1023, 0, 255);
-  if (ldrLedEnabled) analogWrite(led2Pin, ldrPWM);
-  else analogWrite(led2Pin, 0);
-  Blynk.virtualWrite(V1, ldrPWM);
+  analogWrite(led2Pin, ldrLedEnabled ? ldrPWM : 0);
 
-  int smokeValue = analogRead(smokePin);
-  Blynk.virtualWrite(V0, smokeValue);
-
-  if (smokeValue > 800) {
-    digitalWrite(smokeRGB_R, HIGH);
-    digitalWrite(smokeRGB_G, LOW);
-  } else {
-    digitalWrite(smokeRGB_R, LOW);
-    digitalWrite(smokeRGB_G, HIGH);
+  if (abs(ldrPWM - lastLdrPWM) > 5) {
+    Blynk.virtualWrite(V1, ldrPWM);
+    lastLdrPWM = ldrPWM;
   }
 
-  Blynk.virtualWrite(V6, motorSpeed);
+  // Smoke Sensor
+  int smokeValue = analogRead(smokePin);
+  if (abs(smokeValue - lastSmokeValue) > 20) {
+    Blynk.virtualWrite(V0, smokeValue);
+    lastSmokeValue = smokeValue;
+  }
+
+  digitalWrite(smokeRGB_R, smokeValue > 800);
+  digitalWrite(smokeRGB_G, smokeValue <= 800);
+
+  // Motor speed update
+  if (motorSpeed != lastMotorSpeed) {
+    Blynk.virtualWrite(V6, motorSpeed);
+    lastMotorSpeed = motorSpeed;
+  }
 }
 
-// ===== RELAY LOGIC =====
+// ===== OPTIMIZED RELAY LOGIC =====
 void handleRelays() {
   int p1 = analogRead(pot1);
   int p2 = analogRead(pot2);
   int p3 = analogRead(pot3);
-
   int sum = p1 + p2 + p3;
-  Blynk.virtualWrite(V11, p1);
-  Blynk.virtualWrite(V12, p2);
-  Blynk.virtualWrite(V13, p3);
-  Blynk.virtualWrite(V14, sum);
+
+  if (abs(p1 - lastP1) > 10) {
+    Blynk.virtualWrite(V11, p1);
+    lastP1 = p1;
+  }
+  if (abs(p2 - lastP2) > 10) {
+    Blynk.virtualWrite(V12, p2);
+    lastP2 = p2;
+  }
+  if (abs(p3 - lastP3) > 10) {
+    Blynk.virtualWrite(V13, p3);
+    lastP3 = p3;
+  }
+  if (abs(sum - lastSum) > 30) {
+    Blynk.virtualWrite(V14, sum);
+    lastSum = sum;
+  }
 
   if (!relayOverride) {
     digitalWrite(relay1, sum > 10 ? HIGH : LOW);
